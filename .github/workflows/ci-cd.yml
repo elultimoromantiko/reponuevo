@@ -1,0 +1,60 @@
+name: CI/CD Pipeline NetMonitor
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout del repositorio
+      uses: actions/checkout@v4
+
+    - name: Login a Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Build imagen app
+      run: |
+        docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/netmonitor-app:latest \
+                     -t ${{ secrets.DOCKERHUB_USERNAME }}/netmonitor-app:${{ github.sha }} .
+
+    - name: Build imagen nginx
+      run: |
+        docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/netmonitor-nginx:latest ./nginx
+
+    - name: Push imágenes a Docker Hub
+      run: |
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/netmonitor-app:latest
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/netmonitor-app:${{ github.sha }}
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/netmonitor-nginx:latest
+
+    - name: Health Check HTTP
+      run: |
+        echo "Iniciando verificación de disponibilidad HTTP..."
+        curl -f http://${{ secrets.EC2_PUBLIC_IP }}/ || exit 1
+
+    - name: Latencia de red
+      run: |
+        echo "Midiendo tiempo de respuesta total..."
+        curl -w '%{time_total}\n' -o /dev/null -s http://${{ secrets.EC2_PUBLIC_IP }}/
+
+    - name: Validación de puerto
+      run: |
+        echo "Validando accesibilidad del puerto 80..."
+        nc -zv -w 5 ${{ secrets.EC2_PUBLIC_IP }} 80
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Deploy a ECS
+      run: |
+        aws ecs update-service --cluster netmonitor --service netmonitor-svc --force-new-deployment
